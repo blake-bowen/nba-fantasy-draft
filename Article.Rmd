@@ -1,0 +1,370 @@
+---
+title: "Web scraping to get the edge in your NBA fantasy draft"
+output: html_document
+date: "2023-10-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The website I will be getting the data from is the basketball reference website. I'm most interested in the game logs, as with these we can estimate each player's consistency throughout last season, and calculate fantasy scores.
+
+```{r libraries, echo=FALSE}
+
+library(tidyverse)
+library(dplyr)
+library(rvest)
+library(XML)
+library(glue)
+library(janitor)
+library(plotly)
+library(RColorBrewer)
+
+```
+
+Investigating the pages containing each player game logs, we can see that basketball refernce uses a player code to construct the URL containing individual stats for each player. Using this URL as a template I have made the below function that can scrape the gamelog table for a given player code and year. 
+
+This function utilises the rvest package function ```html_elements``` to parse the html code and find the table elements, then ```html_table``` reads this into a table format, which can be converted to a data frame. 
+
+```{r get-player-codes}
+
+# scrape game log table for a player in a given year
+get_gamelog <- function(player_code, year){
+  
+  url <- paste0(glue('https://www.basketball-reference.com/players/i/{player_code}/gamelog/{year}'))
+  # Scrape Player game log
+  gamelog <- url %>%
+    read_html() %>% 
+    html_elements('table') %>%
+    .[8] %>% 
+    html_table() %>%
+    as.data.frame()
+  
+  return(gamelog)
+
+}
+
+get_gamelog("jokicni01", 2023) %>% head()
+
+```
+
+However, I would ideally like to scrape the game logs for all players, or at least the top players from the 2023 season. To do this, we need to get all of the player codes. Thankfully, I was able to find a github repo with code that could be slightly modified to get a table from Basketball Reference containing all the player codes. 
+
+I also decided to filter this player list, removing players with average minutes played below 25. 
+
+```{r get-player-codes}
+
+# TODO: Refactor this
+# TODO: acknowledge references 
+
+# Create Function to Scrape Player Links
+scrape_nba_main <- function(yr){
+  # Create URL
+  url <- paste0('https://www.basketball-reference.com/leagues/NBA_', yr, '_per_game.html')
+  webpage <- read_html(url)
+  
+  # Scrape All Player Links on Page
+  webpage %>%
+    html_nodes(xpath = "//td/a") %>% 
+    html_attr("href") -> links
+  links <- links[grepl("/players", links)]
+  links <- links[!duplicated(links)]
+  
+  # Scrape Player Information - Age + Name
+  webpage %>%
+    html_nodes("table") %>%
+    .[1] %>%
+    html_table(fill = TRUE) %>%
+    as.data.frame() -> yearx
+  # print(yearx)
+  yearx <- yearx %>% filter(Player != "Player")
+  yearx <- yearx[!duplicated(yearx[c('Player', 'Age')]),]
+  yearx <- yearx[,c(2,3,4,8)]
+  # Fix Matt Thomas
+  yearx <- yearx %>% filter(!(Player == 'Matt Thomas' & Age == ''))
+  yearx$Link <- links
+  yearx$Age <- NULL
+  BBRefID <- strsplit(yearx$Link, '\\/')
+  BBRefID <- sapply(BBRefID, function(x) x[4])
+  BBRefID <- gsub(".html", "", BBRefID)
+  yearx$BBRefID <- BBRefID
+  # Return Data
+  return(yearx)
+}
+
+#TODO: REFACTOR AGAIN 
+# Run Code For 1950 to 2019
+yearxs_nba <- 2023
+all_data <- {}
+for(i in 1:length(yearxs_nba)){
+  data <- scrape_nba_main(yearxs_nba[i])
+  all_data[i] <- list(data)
+}
+
+all_bb_ref <- do.call('rbind', all_data)
+all_bb_ref <- all_bb_ref[!duplicated(all_bb_ref$BBRefID),]
+all_bb_ref <- all_bb_ref[order(all_bb_ref$BBRefID),]
+
+all_bb_ref_filtered <- all_bb_ref %>%
+  mutate(MP = as.numeric(MP)) %>% 
+  filter(MP > 25)
+
+all_bb_ref_filtered %>%
+  head()
+
+```
+
+OK, now that we have all of the basketball reference ID's its a matter of looping through them to construct the URL for each individual player's stats, scraping the game log table for each player and combining these into one master table. 
+
+```{r scrape-all-gamelogs}
+
+player_codes <- all_bb_ref$BBRefID
+year <- 2023
+
+all_game_logs <- list()
+for (i in seq_along(player_codes)) {
+  player_code <- player_codes[i]
+  player_game_log <- get_gamelog(player_code=player_code, year=year) %>% 
+    mutate(player_code = player_code) %>% 
+    filter(Rk != "Rk") %>%  # remove the extra column-name rows 
+    mutate(across(everything(), as.character)) 
+    all_game_logs[[player_code]] <- player_game_log
+  
+  if (i > 1) {
+    Sys.sleep(5) # sleep 5 seconds to prevent the website throttling the webscraper
+    } 
+}
+
+all_game_logs_df <- bind_rows(all_game_logs)
+
+all_game_logs_df %>%
+  head()
+
+```
+
+Next, we need to clean the data. Rows corresponding to missed games have a number of different string values, so I replaced those with NA. Some rows that contained the column names also needed to be removed. I also added the player names into this Dataframe, using the player code to join it to the dataframe containing the player names.
+
+I've also calculated number of double doubles, triple doubles, missed points, and a few other stats that are used to calculate fantasy scores, but not included in the original Basketball Reference table.
+
+```{r, clean-data}
+
+# these values correspond to when a player did not play in the game
+missing_values <- c("Inactive|Did Not Dress|Did Not Play|Not With Team|Player Suspended")
+
+# add in the player name
+all_game_logs_df <- all_game_logs_df %>% 
+  left_join(all_bb_ref[c("BBRefID", "Player")],
+            by = c("player_code" = "BBRefID")) %>% 
+  mutate_all(~str_replace_all(., missing_values, NA_character_)) %>% 
+  mutate(across(c(
+    "GS",
+    "FG",
+    "FGA",  
+    "FG.",
+    "X3P",
+    "X3PA",
+    "X3P.",
+    "FT",
+    "FTA",
+    "FT.",
+    "ORB",
+    "DRB",
+    "TRB", 
+    "AST",
+    "BLK",
+    "TOV",
+    "STL",
+    "PTS"),
+    ~as.numeric(.))) %>% 
+  # make columns for triple doubles and double doubles:
+  # DD: (IF: 2/5 OF ASS/BLOCK/STEAL/REB/PTS<9)
+  # TD: (IF: 3/5 OF ASS/BLOCK/STEAL/REB/PTS<9)
+  rowwise() %>% 
+  mutate("DD" = if_else(sum(TRB > 9, AST > 9, BLK > 9, STL > 9, PTS > 9) >= 2, 1, 0)) %>%
+  mutate("TD" = if_else(sum(TRB > 9, AST > 9, BLK > 9, STL > 9, PTS > 9) >= 3, 1, 0)) %>% 
+  mutate("QD" = if_else(sum(TRB > 9, AST > 9, BLK > 9, STL > 9, PTS > 9) >= 4, 1, 0)) %>% 
+  # games played - 1 if they played the game or 0 if not
+  ungroup() %>% 
+  mutate(GP = if_else(is.na(GS), 0, 1)) %>% # if game was played, 1 else zero
+  # calculate number missed for field goals, free throws, three pointers
+  mutate(FGM = FGA - FG) %>% 
+  mutate(FTM = FTA - FT) %>% 
+  mutate(X3PM = X3PA - X3P)
+
+all_game_logs_df %>% 
+  head()
+
+```
+Next, I decided to calculate fantasy scores for each player, to see how they would have performed in a fantasy league last year. I calculated total fantasy score, as well as mean, median and standard deviation. In order to gauge each players potential and consistency, 
+These stats were calculated for the whole season (including missed games as zero's) to gauge each players consistency throughout the season - it's valuable to have players who actually play a lot of games and score highly throughout the season. To examine player potential, I also calculated the same stats with missed games removed - to see how well they play per-game. This metric should highlight any high-performing players who missed a lot of games last year. I also have added in player position and minutes played to this table.
+
+Now we have a table which can definitively rank player performance in 2023, and will be very useful when making picks during the draft. 
+
+
+```{r calculate-fantasy-scores}
+
+# the sum of each metric * by a multiplier is used to calc the fantasy score 
+# this is specific to the league 
+multipliers_vector <- c(
+  "GP" = 1,
+  "FG" = 2,
+  "FGM" = -1,
+  "FT" = 1,
+  "FTA" = 0.5,
+  "FTM" = -1,
+  "X3P" = 3.5,
+  "X3PM" = -1.5,
+  "ORB" = 3,
+  "DRB" = 1,
+  "TRB" = 1,
+  "AST" = 4,
+  "STL" = 5,
+  "BLK" = 6,
+  "TOV" = -2.5,
+  "DD" = 10,
+  "TD" = 30,
+  "QD" = 1000,
+  "PTS" = 1)
+
+# calculate the fantasy score per game 
+scores <- all_game_logs_df %>% 
+  select(c(Player, names(multipliers_vector)))
+
+weighted_scores = list()
+for (i in seq_along(multipliers_vector)){
+  name <- names(multipliers_vector[i])
+  weighted_scores[[name]] <- scores[[name]] * multipliers_vector[name]
+}
+weighted_scores_df <- as.data.frame(weighted_scores)
+agg_weighted_scores <- data.frame(
+  player_name = scores$Player,
+  weighted_scores = rowSums(weighted_scores_df, na.rm = T)
+) %>%
+  cbind(weighted_scores_df) %>% 
+  mutate(weighted_scores_with_na = if_else(GP == 1, weighted_scores, NA)) # create another weighted score with NA's if they did not play, this will allow to calculate per-game stats 
+
+final_weighted_scores_summarised <- agg_weighted_scores %>% 
+  select(player_name, weighted_scores, weighted_scores_with_na, GP) %>% 
+  group_by(player_name) %>%
+  summarise(season_total_score = sum(weighted_scores),
+            n_games_played = sum(GP), 
+            season_mean = mean(weighted_scores), # season stats count missed games as zero
+            season_median = median(weighted_scores),
+            season_stdev = sd(weighted_scores), 
+            games_played_mean = mean(weighted_scores_with_na, na.rm = TRUE), # games_played stats do not include missed games in the calculation
+            games_played_median = median(weighted_scores_with_na, na.rm = TRUE),
+            games_played_stdev = sd(weighted_scores_with_na, na.rm = TRUE)) %>%
+  arrange(desc(season_median)) %>% 
+  # add in other player stats from Basketball reference 
+  left_join(all_bb_ref, by = c("player_name" = "Player")) %>% 
+  select(-Link, -BBRefID)
+
+final_weighted_scores_summarised %>%
+  head()
+
+```
+```{r plots}
+
+theme_set(theme_bw())
+
+medians_scatter <- final_weighted_scores_summarised %>% 
+  ggplot(aes(x = season_median,
+             y = games_played_median,
+             colour = Pos,
+             text = glue(
+               "
+               Player: {player_name}
+               Position: {Pos}
+               Total score for season: {season_total_score}
+               Median score for season: {season_median}
+               Median score for games played: {games_played_median}
+               "
+             ))) +
+  labs(x = 'Median score for season',
+       y = 'Median score for games played')+
+  geom_point() +
+  scale_color_brewer(palette = 'Set3')
+
+medians_scatter %>% ggplotly(tooltip = 'text')
+
+```
+```{r}
+
+split_medians_scatter <- final_weighted_scores_summarised %>% 
+  ggplot(aes(x = season_median,
+             y = games_played_median,
+             colour = Pos,
+             text = glue(
+               "
+               Player: {player_name}
+               Position: {Pos}
+               Total score for season: {season_total_score}
+               Median score for season: {season_median}
+               Median score for games played: {games_played_median}
+               "
+             ))) +
+  labs(x = 'Median score for season',
+       y = 'Median score for games played')+
+  geom_point() +
+  facet_wrap(~Pos) +
+  scale_color_brewer(palette = 'Set3')
+
+split_medians_scatter %>% ggplotly(tooltip = 'text')
+
+```
+
+```{r}
+
+total_scatter <- final_weighted_scores_summarised %>% 
+  ggplot(aes(x = season_total_score,
+             y = games_played_median,
+             colour = Pos,
+             text = glue(
+               "
+               Player: {player_name}
+               Position: {Pos}
+               Total score for season: {season_total_score}
+               Median score for season: {season_median}
+               Median score for games played: {games_played_median}
+               "
+             ))) +
+  labs(x = 'Total score for season',
+       y = 'Median score for games played')+
+  geom_point() +
+  scale_color_brewer(palette = 'Set3')
+
+total_scatter %>% ggplotly(tooltip = 'text')
+
+```
+
+```{r}
+
+split_total_scatter <- final_weighted_scores_summarised %>% 
+  ggplot(aes(x = season_total_score,
+             y = games_played_median,
+             colour = Pos,
+             text = glue(
+               "
+               Player: {player_name}
+               Position: {Pos}
+               Total score for season: {season_total_score}
+               Median score for season: {season_median}
+               Median score for games played: {games_played_median}
+               "
+             ))) +
+  facet_wrap(~Pos) +
+  labs(x = 'Total score for season',
+       y = 'Median score for games played')+
+  geom_point()+
+  scale_color_brewer(palette = 'Set3')
+
+split_total_scatter %>%
+  ggplotly(tooltip = 'text')
+
+```
+
+```{r}
+```
+
+
