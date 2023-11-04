@@ -1,6 +1,8 @@
 ---
-title: "Web scraping to get the edge in your NBA fantasy draft"
-output: html_document
+title: "Web scraping to get an edge in the NBA fantasy league draft"
+output: 
+  html_document:
+    keep_md: true
 date: "2023-10-19"
 ---
 
@@ -8,9 +10,11 @@ date: "2023-10-19"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-The website I will be getting the data from is the basketball reference website. I'm most interested in the game logs, as with these we can estimate each player's consistency throughout last season, and calculate fantasy scores.
+In this project I will be using the rvest package to scrape the web for basketball player data and using this to explore previous performance in the NBA fantasy league. This should help identify the most consistent players, as well as those who may be undervalued in a fantasy draft. 
 
-```{r libraries, echo=FALSE}
+The website I will be getting data from is the Basketball Reference website. I'm most interested in the game logs, as with these we can estimate each player's consistency throughout last season, and calculate fantasy scores.
+
+```{r libraries, echo=FALSE, message=FALSE, results='hide'}
 
 library(tidyverse)
 library(dplyr)
@@ -23,11 +27,12 @@ library(RColorBrewer)
 
 ```
 
-Investigating the pages containing each player game logs, we can see that basketball refernce uses a player code to construct the URL containing individual stats for each player. Using this URL as a template I have made the below function that can scrape the gamelog table for a given player code and year. 
+After investigating the pages containing each player game logs, we can see that Basketball Reference uses a player code and year to construct the URL of each page containing yearly stats for each player. This URL follows the general formula: "www.basketball-reference.com/players/i/{player_code}/gamelog/{year}".
+Using this as a template, I have made the below function that can scrape the gamelog table for a given player code and year.
 
 This function utilises the rvest package function ```html_elements``` to parse the html code and find the table elements, then ```html_table``` reads this into a table format, which can be converted to a data frame. 
 
-```{r get-player-codes}
+```{r get-player-gamelogs}
 
 # scrape game log table for a player in a given year
 get_gamelog <- function(player_code, year){
@@ -38,80 +43,69 @@ get_gamelog <- function(player_code, year){
     read_html() %>% 
     html_elements('table') %>%
     .[8] %>% 
-    html_table() %>%
+    html_table() %>% 
     as.data.frame()
   
   return(gamelog)
 
 }
 
-get_gamelog("jokicni01", 2023) %>% head()
+get_gamelog("jokicni01", 2023) %>% 
+  head() %>% 
+  knitr::kable()
 
 ```
 
-However, I would ideally like to scrape the game logs for all players, or at least the top players from the 2023 season. To do this, we need to get all of the player codes. Thankfully, I was able to find a github repo with code that could be slightly modified to get a table from Basketball Reference containing all the player codes. 
+I would like to scrape the game logs for all players, or at least the top players from the 2023 season. To do this, we need to get all of the player codes. Thankfully, I was able to find this github repo with a function that could be slightly modified to get a table from Basketball Reference containing all the player codes. This table also has average season stats for each player 
 
 I also decided to filter this player list, removing players with average minutes played below 25. 
 
 ```{r get-player-codes}
 
-# TODO: Refactor this
-# TODO: acknowledge references 
+# Acknowledgement: code modified from github.com/djblechn-su/nba-player-team-ids/
 
-# Create Function to Scrape Player Links
+# Create Function to Scrape Player codes
 scrape_nba_main <- function(yr){
   # Create URL
-  url <- paste0('https://www.basketball-reference.com/leagues/NBA_', yr, '_per_game.html')
+  url <- glue('https://www.basketball-reference.com/leagues/NBA_{yr}_per_game.html')
   webpage <- read_html(url)
   
   # Scrape All Player Links on Page
-  webpage %>%
+  links <- webpage %>%
     html_nodes(xpath = "//td/a") %>% 
-    html_attr("href") -> links
+    html_attr("href")
   links <- links[grepl("/players", links)]
   links <- links[!duplicated(links)]
   
-  # Scrape Player Information - Age + Name
-  webpage %>%
+  # Scrape Player Information
+  player_table <- webpage %>%
     html_nodes("table") %>%
     .[1] %>%
     html_table(fill = TRUE) %>%
-    as.data.frame() -> yearx
-  # print(yearx)
-  yearx <- yearx %>% filter(Player != "Player")
-  yearx <- yearx[!duplicated(yearx[c('Player', 'Age')]),]
-  yearx <- yearx[,c(2,3,4,8)]
-  # Fix Matt Thomas
-  yearx <- yearx %>% filter(!(Player == 'Matt Thomas' & Age == ''))
-  yearx$Link <- links
-  yearx$Age <- NULL
-  BBRefID <- strsplit(yearx$Link, '\\/')
+    as.data.frame()
+  player_table <- player_table %>% filter(Player != "Player")
+  player_table <- player_table[!duplicated(player_table[c('Player', 'Age')]),]
+  player_table <- player_table[,c(2,3,4,8)]
+  player_table$Link <- links
+  BBRefID <- strsplit(player_table$Link, '\\/')
   BBRefID <- sapply(BBRefID, function(x) x[4])
   BBRefID <- gsub(".html", "", BBRefID)
-  yearx$BBRefID <- BBRefID
-  # Return Data
-  return(yearx)
+  player_table$BBRefID <- BBRefID
+
+  return(player_table)
 }
 
-#TODO: REFACTOR AGAIN 
-# Run Code For 1950 to 2019
-yearxs_nba <- 2023
-all_data <- {}
-for(i in 1:length(yearxs_nba)){
-  data <- scrape_nba_main(yearxs_nba[i])
-  all_data[i] <- list(data)
-}
+bbref_player_codes <- scrape_nba_main(2023)
+bbref_player_codes <- bbref_player_codes[!duplicated(bbref_player_codes$BBRefID),]
+bbref_player_codes <- bbref_player_codes[order(bbref_player_codes$BBRefID),]
 
-all_bb_ref <- do.call('rbind', all_data)
-all_bb_ref <- all_bb_ref[!duplicated(all_bb_ref$BBRefID),]
-all_bb_ref <- all_bb_ref[order(all_bb_ref$BBRefID),]
-
-all_bb_ref_filtered <- all_bb_ref %>%
+bbref_player_codes_filtered <- bbref_player_codes %>%
   mutate(MP = as.numeric(MP)) %>% 
   filter(MP > 25)
 
-all_bb_ref_filtered %>%
-  head()
+bbref_player_codes_filtered %>%
+  head() %>% 
+  knitr::kable()
 
 ```
 
@@ -119,7 +113,7 @@ OK, now that we have all of the basketball reference ID's its a matter of loopin
 
 ```{r scrape-all-gamelogs}
 
-player_codes <- all_bb_ref$BBRefID
+player_codes <- bbref_player_codes$BBRefID
 year <- 2023
 
 all_game_logs <- list()
@@ -139,13 +133,14 @@ for (i in seq_along(player_codes)) {
 all_game_logs_df <- bind_rows(all_game_logs)
 
 all_game_logs_df %>%
-  head()
+  head() %>% 
+  knitr::kable()
 
 ```
 
-Next, we need to clean the data. Rows corresponding to missed games have a number of different string values, so I replaced those with NA. Some rows that contained the column names also needed to be removed. I also added the player names into this Dataframe, using the player code to join it to the dataframe containing the player names.
+Next, we need to clean the data. Rows corresponding to missed games have a number of different string values, so I replaced those with NA. There were rows that contained column names, which I removed. I joined this table to the player codes table, so now we have player names and minutes played, to make the table a bit easier to read. 
 
-I've also calculated number of double doubles, triple doubles, missed points, and a few other stats that are used to calculate fantasy scores, but not included in the original Basketball Reference table.
+I've additionally calculated number of double doubles, triple doubles, missed points, and a few other stats that are used to calculate fantasy scores, but not included in the original Basketball Reference table.
 
 ```{r, clean-data}
 
@@ -154,7 +149,7 @@ missing_values <- c("Inactive|Did Not Dress|Did Not Play|Not With Team|Player Su
 
 # add in the player name
 all_game_logs_df <- all_game_logs_df %>% 
-  left_join(all_bb_ref[c("BBRefID", "Player")],
+  left_join(bbref_player_codes[c("BBRefID", "Player")],
             by = c("player_code" = "BBRefID")) %>% 
   mutate_all(~str_replace_all(., missing_values, NA_character_)) %>% 
   mutate(across(c(
@@ -178,8 +173,8 @@ all_game_logs_df <- all_game_logs_df %>%
     "PTS"),
     ~as.numeric(.))) %>% 
   # make columns for triple doubles and double doubles:
-  # DD: (IF: 2/5 OF ASS/BLOCK/STEAL/REB/PTS<9)
-  # TD: (IF: 3/5 OF ASS/BLOCK/STEAL/REB/PTS<9)
+  # DD: (IF: 2/5 OF ASS/BLOCK/STEAL/REB/PTS > 9)
+  # TD: (IF: 3/5 OF ASS/BLOCK/STEAL/REB/PTS > 9)
   rowwise() %>% 
   mutate("DD" = if_else(sum(TRB > 9, AST > 9, BLK > 9, STL > 9, PTS > 9) >= 2, 1, 0)) %>%
   mutate("TD" = if_else(sum(TRB > 9, AST > 9, BLK > 9, STL > 9, PTS > 9) >= 3, 1, 0)) %>% 
@@ -193,13 +188,14 @@ all_game_logs_df <- all_game_logs_df %>%
   mutate(X3PM = X3PA - X3P)
 
 all_game_logs_df %>% 
-  head()
+  head() %>% 
+  knitr::kable()
 
 ```
-Next, I decided to calculate fantasy scores for each player, to see how they would have performed in a fantasy league last year. I calculated total fantasy score, as well as mean, median and standard deviation. In order to gauge each players potential and consistency, 
-These stats were calculated for the whole season (including missed games as zero's) to gauge each players consistency throughout the season - it's valuable to have players who actually play a lot of games and score highly throughout the season. To examine player potential, I also calculated the same stats with missed games removed - to see how well they play per-game. This metric should highlight any high-performing players who missed a lot of games last year. I also have added in player position and minutes played to this table.
+Next, I decided to calculate fantasy scores for each player to see how they would have performed in a fantasy league last year. I calculated total fantasy score, as well as mean, median and standard deviation. In order to gauge each player's raw potential and consistency, 
+these stats were calculated for the whole season (i.e. including missed games as zero's in the calculations) to gauge each players consistency throughout the season - it's valuable to have players who actually play a lot of games and score highly throughout the season. To examine player potential, I also calculated the same stats with missed games removed - to see how well they play per-game. This metric should highlight high-performing players, even those who missed a lot of games last year. I also have added in player position and minutes played to this table.
 
-Now we have a table which can definitively rank player performance in 2023, and will be very useful when making picks during the draft. 
+Now we have a table which can definitively rank player performance in 2023, and we can export this to a spreadsheet that will be very useful when making picks during the draft. 
 
 
 ```{r calculate-fantasy-scores}
@@ -257,13 +253,19 @@ final_weighted_scores_summarised <- agg_weighted_scores %>%
             games_played_stdev = sd(weighted_scores_with_na, na.rm = TRUE)) %>%
   arrange(desc(season_median)) %>% 
   # add in other player stats from Basketball reference 
-  left_join(all_bb_ref, by = c("player_name" = "Player")) %>% 
+  left_join(bbref_player_codes, by = c("player_name" = "Player")) %>% 
   select(-Link, -BBRefID)
 
 final_weighted_scores_summarised %>%
-  head()
+  head() %>% 
+  knitr::kable()
 
 ```
+
+To interactively explore the data, can create some plotly scatter charts to compare the players.
+
+In these plots, the y-axis corresponds to a player's potential to have high-scoring games, and the x-axis corresponds to their consistency throughout the season. 
+
 ```{r plots}
 
 theme_set(theme_bw())
@@ -289,6 +291,8 @@ medians_scatter <- final_weighted_scores_summarised %>%
 medians_scatter %>% ggplotly(tooltip = 'text')
 
 ```
+Player position is also an important factor when drafting a team, as you need to ensure all positions are filled. We can plot each position separately to see more clearly who are better players for their position. 
+
 ```{r}
 
 split_medians_scatter <- final_weighted_scores_summarised %>% 
@@ -314,6 +318,8 @@ split_medians_scatter %>% ggplotly(tooltip = 'text')
 
 ```
 
+Total score for the previous season is also a useful metric to look at. This metric is often what other less data-savvy drafters will be using to evaluate their draft picks. If we plot season total score against median score of games played, this can help identify under-valued players who played less games, but scored highly for the games that they played. 
+
 ```{r}
 
 total_scatter <- final_weighted_scores_summarised %>% 
@@ -337,6 +343,8 @@ total_scatter <- final_weighted_scores_summarised %>%
 total_scatter %>% ggplotly(tooltip = 'text')
 
 ```
+
+
 
 ```{r}
 
@@ -363,8 +371,4 @@ split_total_scatter %>%
   ggplotly(tooltip = 'text')
 
 ```
-
-```{r}
-```
-
 
