@@ -1,9 +1,7 @@
 ---
 title: "Web scraping to get an edge in the NBA fantasy league draft"
-output: 
-  html_document:
-    keep_md: true
-date: "2023-10-19"
+output: github_document
+date: "2023-11-04"
 ---
 
 ```{r setup, include=FALSE}
@@ -192,7 +190,10 @@ all_game_logs_df %>%
   knitr::kable()
 
 ```
-Next, I decided to calculate fantasy scores for each player to see how they would have performed in a fantasy league last year. I calculated total fantasy score, as well as mean, median and standard deviation. In order to gauge each player's raw potential and consistency, 
+
+Now we need to calculate "fantasy scores" for each player to see how they would have performed in a fantasy league last year. These are calculated using a formula specific to the fantasy league. Each stat is multiplied by a multiplier and then the weighted statistics are summed to get the fantasy score for a given game. 
+
+For each player, I calculated total fantasy score, as well as mean, median and standard deviation for the 2023 season. In order to gauge each player's raw potential and consistency, 
 these stats were calculated for the whole season (i.e. including missed games as zero's in the calculations) to gauge each players consistency throughout the season - it's valuable to have players who actually play a lot of games and score highly throughout the season. To examine player potential, I also calculated the same stats with missed games removed - to see how well they play per-game. This metric should highlight high-performing players, even those who missed a lot of games last year. I also have added in player position and minutes played to this table.
 
 Now we have a table which can definitively rank player performance in 2023, and we can export this to a spreadsheet that will be very useful when making picks during the draft. 
@@ -288,7 +289,7 @@ medians_scatter <- final_weighted_scores_summarised %>%
   geom_point() +
   scale_color_brewer(palette = 'Set3')
 
-medians_scatter %>% ggplotly(tooltip = 'text')
+medians_scatter # %>% ggplotly(tooltip = 'text')
 
 ```
 Player position is also an important factor when drafting a team, as you need to ensure all positions are filled. We can plot each position separately to see more clearly who are better players for their position. 
@@ -314,7 +315,7 @@ split_medians_scatter <- final_weighted_scores_summarised %>%
   facet_wrap(~Pos) +
   scale_color_brewer(palette = 'Set3')
 
-split_medians_scatter %>% ggplotly(tooltip = 'text')
+split_medians_scatter # %>% ggplotly(tooltip = 'text')
 
 ```
 
@@ -340,7 +341,7 @@ total_scatter <- final_weighted_scores_summarised %>%
   geom_point() +
   scale_color_brewer(palette = 'Set3')
 
-total_scatter %>% ggplotly(tooltip = 'text')
+total_scatter # %>% ggplotly(tooltip = 'text')
 
 ```
 
@@ -367,8 +368,17 @@ split_total_scatter <- final_weighted_scores_summarised %>%
   geom_point()+
   scale_color_brewer(palette = 'Set3')
 
-split_total_scatter %>%
-  ggplotly(tooltip = 'text')
+split_total_scatter # %>% ggplotly(tooltip = 'text')
+
+```
+
+```{}
+```
+
+
+```{r session}
+
+sessionInfo()
 
 ```
 
